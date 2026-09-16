@@ -10,8 +10,8 @@
 		<label class="control-label" for="fsc-relay-mode">工作模式</label>
 		<div class="group-controls">
 			<select id="fsc-relay-mode" name="relay_mode" class="form-control">
-				<option value="inject"<?= $this->relayMode() ? '' : ' selected="selected"' ?>>inject(cookie 注入直连,默认,快)</option>
-				<option value="relay"<?= $this->relayMode() ? ' selected="selected"' ?>>relay(每次抓取都走 FlareSolverr 浏览器,最稳)</option>
+				<option value="inject"<?php if (!$this->relayMode()) { echo ' selected="selected"'; } ?>>inject(cookie 注入直连,默认,快)</option>
+				<option value="relay"<?php if ($this->relayMode()) { echo ' selected="selected"'; } ?>>relay(每次抓取都走 FlareSolverr 浏览器,最稳)</option>
 			</select>
 			<p class="help">inject:把求解的 cf_clearance 注入 cURL 直连,只解一次用到过期再换;relay:每次刷新都由 FlareSolverr 浏览器代为传输 —— 只适合「cookie 有效但 curl 仍被拒(TLS 指纹校验)」的站点。relay 需在系统配置里启用 API。</p>
 		</div>

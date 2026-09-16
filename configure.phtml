@@ -7,6 +7,17 @@
 	</div>
 
 	<div class="form-group">
+		<label class="control-label" for="fsc-relay-mode">工作模式</label>
+		<div class="group-controls">
+			<select id="fsc-relay-mode" name="relay_mode" class="form-control">
+				<option value="inject"<?= $this->relayMode() ? '' : ' selected="selected"' ?>>inject(cookie 注入直连,默认,快)</option>
+				<option value="relay"<?= $this->relayMode() ? ' selected="selected"' ?>>relay(每次抓取都走 FlareSolverr 浏览器,最稳)</option>
+			</select>
+			<p class="help">inject:把求解的 cf_clearance 注入 cURL 直连,只解一次用到过期再换;relay:每次刷新都由 FlareSolverr 浏览器代为传输 —— 只适合「cookie 有效但 curl 仍被拒(TLS 指纹校验)」的站点。relay 需在系统配置里启用 API。</p>
+		</div>
+	</div>
+
+	<div class="form-group">
 		<label class="control-label" for="flaresolverr_base_url">FlareSolverr base URL</label>
 		<div class="group-controls">
 			<input type="url" id="flaresolverr_base_url" name="flaresolverr_base_url" class="form-control"
@@ -70,6 +81,16 @@
 </form>
 
 <h4>当前已缓存的 clearance</h4>
+<?php if ($this->relayMode()) : ?>
+<?php $fscFirstDomain = $this->configuredDomains()[0] ?? 'forum.naixi.net'; ?>
+<p class="help">
+	relay 模式订阅地址(需先在 系统配置 → API 与短代码 中启用 API):
+	<code><?= htmlspecialchars(rtrim(FreshRSS_Context::systemConf()->base_url, '/')
+		. '/api/misc.php?ext=FlareSolverr%20Cookies&feed='
+		. rawurlencode('https://' . $fscFirstDomain . '/forum.php?mod=rss')) ?></code>
+	(示例地址按你的 feed 实际路径修改;必须使用 FreshRSS 的公网访问地址)
+</p>
+<?php endif; ?>
 <?php $fscRows = $this->cacheStatusRows(); ?>
 <?php if ($fscRows === []) : ?>
 	<p class="help">暂无缓存。添加受保护 feed 并刷新一次后，这里会列出各域名的 cookie 求解时间与 User-Agent。</p>

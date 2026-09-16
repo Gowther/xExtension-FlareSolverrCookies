@@ -19,6 +19,27 @@
 对比「整条 RSS 全程走 FlareSolverr 转发」的方案（如 ravenscroftj/freshrss-flaresolverr-extension 的
 relay 模式），本扩展只在 cookie 失效时才驱动浏览器，速度快、对 FlareSolverr 几乎零压力，feed 地址保持原样。
 
+## 两种模式
+
+**inject（cookie 注入直连，默认）** —— 默认机制，适合「cf_clearance 发给普通 curl 客户端仍被接受」的站点。
+
+**relay（全程浏览器传输，最稳）**：部分站点（尤其较新的 Cloudflare 配置）会连带校验客户端 TLS/JA3 指纹，
+libcurl 指纹与求解浏览器不一致时，即使 cf_clearance 有效照样再出挑战页（症状：FlareSolverr 刚解成功、
+FreshRSS 下一轮仍出现 `HTTP 403 challenge slipped through` 循环）。此时切到 relay：
+
+1. 扩展配置 → 工作模式选 `relay`；
+2. **系统配置 → API** 里启用 FreshRSS API（relay 网关依赖 `/api/misc.php`；GReader 主 API 仍受各自 API 密码保护）；
+3. 订阅地址改为（按实际公网域名与 feed 路径替换）：
+
+   ```
+   https://<FreshRSS公网地址>/api/misc.php?ext=FlareSolverr%20Cookies&feed=https%3A%2F%2Fforum.naixi.net%2Fforum.php%3Fmod%3Drss
+   ```
+
+   即 `/api/misc.php?ext=FlareSolverr%20Cookies&feed=<把 feed 原始地址做 URL 编码>`；必须用 FreshRSS 的**公网访问地址**，
+   若一定要用容器内部地址需给 `INTERNAL_HOST_ALLOWLIST` 环境变量加白。
+4. 每次抓取由 FlareSolverr 真实浏览器传输（单次 15-30 秒），feed 的刷新间隔调大、
+   feed 高级选项里的 timeout（秒）适当加大。
+
 ## 已知限制（必读）
 
 - **IP 绑定**：`cf_clearance` 由 Cloudflare 绑定到「求解时的出口 IP + User-Agent」。要求

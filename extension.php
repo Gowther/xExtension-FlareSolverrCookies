@@ -37,6 +37,7 @@ final class FlareSolverrCookiesExtension extends Minz_Extension {
 	public function init(): void {
 		$this->registerHook('feed_before_actualize', [$this, 'hookFeedBeforeActualize']);
 		$this->registerHook('simplepie_after_init', [$this, 'hookSimplepieAfterInit']);
+		$this->registerHook('api_misc', [$this, 'hookApiMisc']);
 	}
 
 	/** @return string|true */
@@ -58,6 +59,8 @@ final class FlareSolverrCookiesExtension extends Minz_Extension {
 			$this->setConfValue('max_timeout_ms', max(20000, min(120000, Minz_Request::paramInt('max_timeout_ms') ?: 60000)));
 			$this->setConfValue('cookie_ttl', max(600, min(604800, Minz_Request::paramInt('cookie_ttl') ?: 21600)));
 			$this->setConfValue('validate_interval', max(60, min(86400, Minz_Request::paramInt('validate_interval') ?: 600)));
+			$mode = Minz_Request::paramString('relay_mode', true);
+			$this->setConfValue('relay_mode', in_array($mode, ['inject', 'relay'], true) ? $mode : null);
 			if (Minz_Request::paramBoolean('purge_cache')) {
 				$purged = $this->purgeCache();
 				Minz_Log::warning(self::LOG_PREFIX . ' Cleared ' . $purged . ' cached clearance(s) on manual request');
@@ -166,6 +169,115 @@ final class FlareSolverrCookiesExtension extends Minz_Extension {
 	}
 
 	/* -------------------------------------------------------------------------
+	 * Relay mode: some sites reject cf_clearance replayed by plain-curl clients
+	 * because the TLS fingerprint differs from the solving browser. For these,
+	 * the feed must be fetched entirely through the FlareSolverr browser:
+	 *  1. set relay_mode=relay in the extension configuration;
+	 *  2. enable the FreshRSS API (system configuration);
+	 *  3. subscribe to <FreshRSS>/api/misc.php?ext=FlareSolverr%20Cookies&feed=<urlencoded feed>
+	 * Each fetch is then transported by FlareSolverr's real browser.
+	 * ---------------------------------------------------------------------- */
+
+	public function relayMode(): bool {
+		return $this->confValue('relay_mode') === 'relay';
+	}
+
+	/**
+	 * api/misc.php hook: fetch the requested allowlisted feed through
+	 * FlareSolverr and stream back the response body (the RSS/Atom XML).
+	 * Public endpoint (gated to the allowlisted domains); FreshRSS' own fetcher
+	 * and anyone who knows the URL can call it.
+	 */
+	public function hookApiMisc(): void {
+		header('X-Content-Type-Options: nosniff');
+		try {
+			if (!$this->relayMode()) {
+				header('HTTP/1.1 501 Not Implemented');
+				header('Content-Type: text/plain; charset=UTF-8');
+				die('Relay mode is disabled for this extension');
+			}
+			$feedUrl = '';
+			if (isset($_GET['feed']) && is_string($_GET['feed'])) {
+				$feedUrl = $_GET['feed'];
+			} elseif (isset($_GET['url']) && is_string($_GET['url'])) {
+				$feedUrl = $_GET['url'];
+			}
+			$parsed = parse_url($feedUrl);
+			$host = strtolower((string)($parsed['host'] ?? ''));
+			if ($host === '' || !in_array(strtolower((string)($parsed['scheme'] ?? '')), ['http', 'https'], true)
+				|| !$this->matchesDomain($host, $this->configuredDomains())) {
+				header('HTTP/1.1 403 Forbidden');
+				header('Content-Type: text/plain; charset=UTF-8');
+				die('The requested domain is in no configured protected domains list');
+			}
+			$base = trim($this->flaresolverrBaseUrl());
+			if ($base === '') {
+				header('HTTP/1.1 503 Service Unavailable');
+				header('Content-Type: text/plain; charset=UTF-8');
+				die('FlareSolverr base URL is not configured');
+			}
+
+			$data = $this->flaresolverrRequest($base, $feedUrl, $this->maxTimeoutMs());
+			$status = is_string($data['status'] ?? null) ? $data['status'] : '';
+			$response = is_string($data['solution']['response'] ?? null) ? $data['solution']['response'] : '';
+			if ($status !== 'ok' || $response === '' || stripos($response, 'Just a moment') !== false) {
+				Minz_Log::warning(self::LOG_PREFIX . " relay for {$host} did not return clean content (status={$status})");
+				header('HTTP/1.1 502 Bad Gateway');
+				header('Content-Type: text/plain; charset=UTF-8');
+				die("FlareSolverr did not fetch clean content for {$host}");
+			}
+
+			$ct = preg_match('/^\s*<(\?xml|\!DOCTYPE|\!)/i', $response) === 1
+				? 'application/rss+xml; charset=utf-8' : 'text/plain; charset=utf-8';
+			if (preg_match('/^\s*<\!DOCTYPE html|^\s*<html/i', $response)) {
+				$ct = 'text/html; charset=utf-8';
+			}
+			header('Content-Type: ' . $ct);
+			header('Content-Length: ' . strlen($response));
+			echo $response;
+		} catch (Throwable $e) {
+			Minz_Log::error(self::LOG_PREFIX . ' relay: ' . $e->getMessage());
+			header('HTTP/1.1 502 Bad Gateway');
+			header('Content-Type: text/plain; charset=UTF-8');
+			die('Relay error: ' . $e->getMessage());
+		}
+	}
+
+	/**
+	 * One `request.get` against FlareSolverr. Throws when the instance is
+	 * unreachable or answers garbage. Mirrors FlareSolverr v1 API.
+	 * @return array<mixed>
+	 */
+	private function flaresolverrRequest(string $base, string $feedUrl, int $maxTimeoutMs): array {
+		$ch = curl_init(rtrim($base, '/') . '/v1');
+		curl_setopt_array($ch, [
+			CURLOPT_POST => true,
+			CURLOPT_POSTFIELDS => json_encode([
+				'cmd' => 'request.get',
+				'url' => $feedUrl,
+				'maxTimeout' => $maxTimeoutMs,
+			]),
+			CURLOPT_RETURNTRANSFER => true,
+			CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+			CURLOPT_CONNECTTIMEOUT => 10,
+			CURLOPT_TIMEOUT => intdiv($maxTimeoutMs, 1000) + 30,
+			CURLOPT_FOLLOWLOCATION => true,
+		]);
+		$body = curl_exec($ch);
+		$curlErr = curl_error($ch);
+		curl_close($ch);
+
+		if (!is_string($body) || $body === '') {
+			throw new RuntimeException('FlareSolverr unreachable (' . $base . '): ' . ($curlErr !== '' ? $curlErr : 'empty response'));
+		}
+		$data = json_decode($body, true);
+		if (!is_array($data)) {
+			throw new RuntimeException('FlareSolverr returned invalid JSON');
+		}
+		return $data;
+	}
+
+	/* -------------------------------------------------------------------------
 	 * curl_params injection (FreshRSS whitelists CURLOPT_COOKIE/USERAGENT/…)
 	 * ---------------------------------------------------------------------- */
 
@@ -254,32 +366,8 @@ final class FlareSolverrCookiesExtension extends Minz_Extension {
 				return null;
 			}
 
-			$ch = curl_init(rtrim($base, '/') . '/v1');
-			curl_setopt_array($ch, [
-				CURLOPT_POST => true,
-				CURLOPT_POSTFIELDS => json_encode([
-					'cmd' => 'request.get',
-					'url' => $feedUrl,
-					'maxTimeout' => $maxTimeoutMs,
-				]),
-				CURLOPT_RETURNTRANSFER => true,
-				CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
-				CURLOPT_CONNECTTIMEOUT => 10,
-				CURLOPT_TIMEOUT => intdiv($maxTimeoutMs, 1000) + 30,
-				CURLOPT_FOLLOWLOCATION => true,
-			]);
-			$body = curl_exec($ch);
-			$curlErr = curl_error($ch);
-			curl_close($ch);
-
-			if (!is_string($body) || $body === '') {
-				throw new RuntimeException('FlareSolverr unreachable (' . $base . '): ' . ($curlErr !== '' ? $curlErr : 'empty response'));
-			}
-			$data = json_decode($body, true);
-			if (!is_array($data)) {
-				throw new RuntimeException('FlareSolverr returned invalid JSON');
-			}
-			$status = is_scalar($data['status'] ?? null) ? (string)$data['status'] : '';
+			$data = $this->flaresolverrRequest($base, $feedUrl, $maxTimeoutMs);
+			$status = is_string($data['status'] ?? null) ? $data['status'] : '';
 			$cookies = is_array($data['solution']['cookies'] ?? null) ? $data['solution']['cookies'] : [];
 			$ua = is_string($data['solution']['userAgent'] ?? null) ? $data['solution']['userAgent'] : '';
 			$cookie = '';

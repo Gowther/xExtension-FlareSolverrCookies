@@ -651,10 +651,6 @@ final class FlareSolverrCookiesExtension extends Minz_Extension {
 	 * output and entity-encoded <pre> bodies.
 	 */
 	private function extractFeedBody(string $raw): ?string {
-		if (preg_match('/^\s*<\?(xml|=xml|xml-stylesheet)/i', $raw)
-			|| preg_match('/^\s*<(?:rss|feed)(?:[\s>])/i', $raw)) {
-			return $raw;
-		}
 		$pos = stripos($raw, '<rss');
 		$posFeed = stripos($raw, '<feed');
 		if ($pos === false) {
@@ -663,20 +659,44 @@ final class FlareSolverrCookiesExtension extends Minz_Extension {
 			$pos = $posFeed;
 		}
 		if ($pos !== false) {
-			return substr($raw, $pos);
+			return $this->normalizeFeedXml(substr($raw, $pos));
 		}
 		// entity-encoded body inside <pre> ... decode entities, try again
 		if (preg_match('/<pre[^>]*>(.*?)<\/pre>/is', $raw, $m)) {
 			$decoded = html_entity_decode($m[1], ENT_QUOTES | ENT_XML1, 'UTF-8');
-			$decoded = preg_replace('/^[^<]*<\?xml[^>]*\?>/i', '', $decoded) ?? $decoded;
-			$inner = $this->extractFeedBody(ltrim($decoded));
-			if ($inner !== null && preg_match('/^\s*<(?:\?xml|rss|feed)/i', $inner)) {
-				return $inner;
-			}
 			if (preg_match('/^\s*<(?:\?xml|rss|feed)/i', $decoded)) {
-				return $decoded;
+				return $this->normalizeFeedXml($decoded);
 			}
 		}
 		return null;
 	}
+
+	/**
+	 * Keep only the feed root element: cut trailing DOM junk (Chrome source
+	 * viewer appends more nodes), restore a canonical XML declaration, and
+	 * sanity-check the document handles with libxml.
+	 */
+	private function normalizeFeedXml(string $chunk): ?string {
+		if (str_starts_with(ltrim($chunk), '<?xml') === false
+			&& preg_match('/^\s*<(?:rss|feed)/i', $chunk) === 1) {
+			$chunk = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" . ltrim($chunk);
+		}
+		$end = strripos($chunk, '</rss>');
+		$endLen = 6;
+		$endFeed = strripos($chunk, '</feed>');
+		if ($endFeed !== false && ($end === false || $endFeed > $end)) {
+			$end = $endFeed;
+			$endLen = 7;
+		}
+		if ($end !== false) {
+			$chunk = substr($chunk, 0, $end + $endLen);
+		}
+		libxml_use_internal_errors(true);
+		$dom = new DOMDocument();
+		$valid = $dom->loadXML($chunk !== '' ? $chunk : '', LIBXML_NONET) !== false
+			&& stripos((string)($dom->documentElement?->nodeName ?? ''), 'rss') === 0;
+		libxml_use_internal_errors(false);
+		return $valid ? $chunk : null;
+	}
+
 }

@@ -499,17 +499,17 @@ final class FlareSolverrCookiesExtension extends Minz_Extension {
 		return false;
 	}
 
-	private function maxTimeoutMs(): int {
+	public function maxTimeoutMs(): int {
 		$value = $this->confValue('max_timeout_ms');
 		return is_numeric($value) ? max(20000, min(120000, (int)$value)) : 60000;
 	}
 
-	private function cookieTtl(): int {
+	public function cookieTtl(): int {
 		$value = $this->confValue('cookie_ttl');
 		return is_numeric($value) ? max(600, min(604800, (int)$value)) : 21600;
 	}
 
-	private function validateInterval(): int {
+	public function validateInterval(): int {
 		$value = $this->confValue('validate_interval');
 		return is_numeric($value) ? max(60, min(86400, (int)$value)) : 600;
 	}

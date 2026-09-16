@@ -33,6 +33,8 @@ final class FlareSolverrCookiesExtension extends Minz_Extension {
 
 	/** @var array<int,string>|null */
 	private ?array $domainsCache = null;
+	/** @var array<string,bool> keys already warned once in this process */
+	private array $warnedOnce = [];
 
 	public function init(): void {
 		$this->registerHook('feed_before_actualize', [$this, 'hookFeedBeforeActualize']);
@@ -92,7 +94,11 @@ final class FlareSolverrCookiesExtension extends Minz_Extension {
 		$base = trim($this->confValue('flaresolverr_base_url') ?? '');
 		$domains = $this->configuredDomains();
 		if ($base === '' || $domains === []) {
-			return;	// nothing configured yet
+			// Nothing configured yet: explain once per request why nothing is injected
+			$this->warnOnce($base === '' ? 'no-base-url' : 'no-domains',
+			'No ' . ($base === '' ? 'FlareSolverr base URL' : 'protected domains')
+			. ' configured in the extension settings; nothing will be injected');
+			return;
 		}
 
 		$host = strtolower((string)parse_url((string)$feed->url(), PHP_URL_HOST));
@@ -627,5 +633,11 @@ final class FlareSolverrCookiesExtension extends Minz_Extension {
 		}
 		usort($rows, static fn(array $a, array $b): int => strcmp($a['host'], $b['host']));
 		return $rows;
+	}
+	private function warnOnce(string $key, string $message): void {
+		if (!isset($this->warnedOnce[$key])) {
+			$this->warnedOnce[$key] = true;
+			Minz_Log::warning(self::LOG_PREFIX . ' ' . $message);
+		}
 	}
 }

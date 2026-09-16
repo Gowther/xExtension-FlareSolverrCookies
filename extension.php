@@ -233,14 +233,19 @@ final class FlareSolverrCookiesExtension extends Minz_Extension {
 				die("FlareSolverr did not fetch clean content for {$host}");
 			}
 
-			$ct = preg_match('/^\s*<(\?xml|\!DOCTYPE|\!)/i', $response) === 1
-				? 'application/rss+xml; charset=utf-8' : 'text/plain; charset=utf-8';
-			if (preg_match('/^\s*<\!DOCTYPE html|^\s*<html/i', $response)) {
-				$ct = 'text/html; charset=utf-8';
+			// FlareSolverr returns the BROWSER-DOM source of the page; for XML
+			// documents Chrome may serve it wrapped in HTML (or entity-encoded
+			// inside a <pre> viewer). Extract the feed XML before serving.
+			$body = $this->extractFeedBody($response);
+			if ($body === null) {
+				Minz_Log::warning(self::LOG_PREFIX . " relay for {$host}: no RSS/Atom XML found in the response");
+				header('HTTP/1.1 502 Bad Gateway');
+				header('Content-Type: text/plain; charset=UTF-8');
+				die("FlareSolverr fetched the page but no feed XML was found for {$host}");
 			}
-			header('Content-Type: ' . $ct);
-			header('Content-Length: ' . strlen($response));
-			echo $response;
+			header('Content-Type: application/rss+xml; charset=utf-8');
+			header('Content-Length: ' . strlen($body));
+			echo $body;
 		} catch (Throwable $e) {
 			Minz_Log::error(self::LOG_PREFIX . ' relay: ' . $e->getMessage());
 			header('HTTP/1.1 502 Bad Gateway');
@@ -639,5 +644,39 @@ final class FlareSolverrCookiesExtension extends Minz_Extension {
 			$this->warnedOnce[$key] = true;
 			Minz_Log::warning(self::LOG_PREFIX . ' ' . $message);
 		}
+	}
+	/**
+	 * Return clean RSS/Atom XML from FlareSolverr's page source, or null.
+	 * Handles raw XML responses as well as Chrome-style HTML-wrapped viewer
+	 * output and entity-encoded <pre> bodies.
+	 */
+	private function extractFeedBody(string $raw): ?string {
+		if (preg_match('/^\s*<\?(xml|=xml|xml-stylesheet)/i', $raw)
+			|| preg_match('/^\s*<(?:rss|feed)(?:[\s>])/i', $raw)) {
+			return $raw;
+		}
+		$pos = stripos($raw, '<rss');
+		$posFeed = stripos($raw, '<feed');
+		if ($pos === false) {
+			$pos = $posFeed;
+		} elseif ($posFeed !== false && $posFeed < $pos) {
+			$pos = $posFeed;
+		}
+		if ($pos !== false) {
+			return substr($raw, $pos);
+		}
+		// entity-encoded body inside <pre> ... decode entities, try again
+		if (preg_match('/<pre[^>]*>(.*?)<\/pre>/is', $raw, $m)) {
+			$decoded = html_entity_decode($m[1], ENT_QUOTES | ENT_XML1, 'UTF-8');
+			$decoded = preg_replace('/^[^<]*<\?xml[^>]*\?>/i', '', $decoded) ?? $decoded;
+			$inner = $this->extractFeedBody(ltrim($decoded));
+			if ($inner !== null && preg_match('/^\s*<(?:\?xml|rss|feed)/i', $inner)) {
+				return $inner;
+			}
+			if (preg_match('/^\s*<(?:\?xml|rss|feed)/i', $decoded)) {
+				return $decoded;
+			}
+		}
+		return null;
 	}
 }

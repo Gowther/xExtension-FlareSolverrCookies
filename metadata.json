@@ -1,0 +1,8 @@
+{
+	"name": "FlareSolverr Cookies",
+	"author": "Shiki (generated with ZCode)",
+	"description": "Bypasses Cloudflare challenge-protected RSS feeds: injects a cf_clearance cookie obtained from FlareSolverr (and its bound User-Agent) into the per-feed cURL parameters of FreshRSS.",
+	"version": "1.0.0",
+	"entrypoint": "FlareSolverrCookies",
+	"type": "system"
+}
